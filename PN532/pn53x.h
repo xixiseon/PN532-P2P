@@ -41,6 +41,7 @@ typedef struct {
     uint8_t          activated_mode;
     bool             initiator_init_pending;
     bool             target_init_pending;
+    bool             target_get_data_pending;
     uint8_t          ui8Parameters;
     pn532_sam_mode   sammode;
     PN53x_Interface *_interface;
@@ -330,6 +331,7 @@ typedef enum {
 
 #define PN532_FRAME_DEFAULT_WAIT_TIME  5000 // default is 60ms
 #define PN532_FRAME_SAMCFG_WAIT_TIME   1500
+#define PN532_P2P_ACTIVATION_POLL_WAIT_TIME 250
 #define PN532_FRAME_INLIST_TARGET_TIME 150
 
 typedef struct {
@@ -359,7 +361,6 @@ int  mifare_write_block(nfc *const me, uint8_t blocknum, uint8_t *pData);
 int  mifare_read_block(nfc *const me, uint8_t blocknum, uint8_t *pData);
 int  mifare_authenticate_block(nfc *const me, mifare_t *authenticate_t,
                                uint8_t block_num);
-int  InJumpForDEP(nfc *const me);
 int  SAMConfig(nfc *const me, uint8_t mode);
 bool I2cSAMConfig(nfc *const me, uint8_t mode);
 int  readRegister(nfc *const me, uint16_t reg, uint8_t *data);
@@ -420,6 +421,8 @@ int  P2PTargetTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
 int  P2PInitiatorTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
                       uint8_t *rx, uint32_t rxCapacity, uint8_t *rxLen);
 int  P2PInitiatorRelease(nfc *const me);
+void P2PClearLocalState(nfc *const me);
+void P2PAbortCurrentCommand(nfc *const me);
 int  tgSetData(nfc *const me, uint8_t *pData, uint32_t wLen);
 int  tgGetData(nfc *const me, uint8_t *pBuf, uint32_t capacity);
 #endif
