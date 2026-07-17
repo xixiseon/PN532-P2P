@@ -19,8 +19,11 @@ uint8_t rxLen;
 void P2pTargetFsm(void);
 void P2pInitiatorFsm(void);
 
-#define LED_INFO_PORT GPIOC
-#define LED_INFO_PIN  GPIO_Pin_2
+#define LED_INFO_PORT                  GPIOC
+#define LED_INFO_PIN                   GPIO_Pin_2
+#define P2P_ACTIVATION_WAIT_LIMIT      20
+#define PN532_ACTIVATED_FRAMING_MASK   0x03
+#define PN532_ACTIVATED_FRAMING_ACTIVE 0x01
 #define LED_INFO_TROGGLE() \
     do { \
         LED_INFO_PORT->ODR &= ~LED_INFO_PIN; \
@@ -75,20 +78,24 @@ void P2pTargetFsm(void)
         WAIT_TARGET = 0,
         TRANS,
     } State = WAIT_TARGET;
-    int status;
+    int         status;
+    const char *mode;
 
     switch (State) {
     case WAIT_TARGET:
         status = P2PTargetInit(&UartNfc);
         if (status == NFC_SUCCESS) {
-            SEGGER_RTT_printf(0, "[P2P]:find initiator!\n");
+            SEGGER_RTT_printf(0, "[P2P]:find initiator in %s mode!\n",
+                              (UartNfc.activated_mode & PN532_ACTIVATED_FRAMING_MASK) == PN532_ACTIVATED_FRAMING_ACTIVE ? "active" : "passive");
             State = TRANS;
         } else if (status != NFC_WAIT) {
-            SEGGER_RTT_printf(0, "[P2P]:target init error=%d, pn532=0x%02x\n",
+            SEGGER_RTT_printf(0, "[P2P]:target init error=%d, pn532=0x%02x, mode=passive/active\n",
                               status, UartNfc.last_error);
+            P2PResetPendingState(&UartNfc);
         }
         break;
     case TRANS:
+        mode   = (UartNfc.activated_mode & PN532_ACTIVATED_FRAMING_MASK) == PN532_ACTIVATED_FRAMING_ACTIVE ? "active" : "passive";
         status = P2PTargetTxRx(&UartNfc, tx, sizeof(tx), rx, sizeof(rx),
                                &rxLen);
         if (status == NFC_SUCCESS) {
@@ -98,12 +105,14 @@ void P2pTargetFsm(void)
                 printfBuffer(rx, rxLen);
             }
         } else if (status == NFC_ETGRELEASED) {
-            SEGGER_RTT_printf(0, "[P2P]:session released, result=%d, pn532=0x%02x\n",
-                              status, UartNfc.last_error);
+            SEGGER_RTT_printf(0, "[P2P]:session released, result=%d, pn532=0x%02x, mode=%s\n",
+                              status, UartNfc.last_error, mode);
+            P2PResetPendingState(&UartNfc);
             State = WAIT_TARGET;
         } else if (status != NFC_WAIT) {
-            SEGGER_RTT_printf(0, "[P2P]:target exchange error=%d, pn532=0x%02x\n",
-                              status, UartNfc.last_error);
+            SEGGER_RTT_printf(0, "[P2P]:target exchange error=%d, pn532=0x%02x, mode=%s\n",
+                              status, UartNfc.last_error, mode);
+            P2PResetPendingState(&UartNfc);
             State = WAIT_TARGET;
         }
         break;
@@ -116,30 +125,54 @@ void P2pInitiatorFsm(void)
         WAIT_TARGET = 0,
         TRANS,
         RELEASE,
-    } State = WAIT_TARGET;
-    static uint8_t activeMode = P2P_PASSIVE_MODE;
-    static uint8_t failureCount;
-    int status;
+        RECOVER,
+    } State                    = WAIT_TARGET;
+    static uint8_t  activeMode = P2P_PASSIVE_MODE;
+    static uint8_t  failureCount;
+    static uint16_t activationWaitCount;
+    static int      exchangeError;
+    int             status;
+    int             recoveryStatus;
 
     switch (State) {
     case WAIT_TARGET:
         status = P2PInitiatorInit(&UartNfc, activeMode, P2P_BAUD_106);
         if (status == NFC_SUCCESS) {
-            failureCount = 0;
+            failureCount        = 0;
+            activationWaitCount = 0;
             SEGGER_RTT_printf(0, "[P2P]:find target in %s 106 kbps!\n",
                               activeMode == P2P_ACTIVE_MODE ? "active" : "passive");
             State = TRANS;
-        } else if (status != NFC_WAIT) {
-            SEGGER_RTT_printf(0, "[P2P]:initiator init error=%d, pn532=0x%02x\n",
-                              status, UartNfc.last_error);
-            failureCount++;
-            if (activeMode == P2P_PASSIVE_MODE && failureCount >= 2) {
-                activeMode = P2P_ACTIVE_MODE;
-                failureCount = 0;
-            } else if (activeMode == P2P_ACTIVE_MODE) {
-                activeMode = P2P_PASSIVE_MODE;
-                failureCount = 0;
+            break;
+        }
+        if (status == NFC_WAIT) {
+            activationWaitCount++;
+            if (activationWaitCount < P2P_ACTIVATION_WAIT_LIMIT) {
+                break;
             }
+            status = NFC_ETIMEOUT;
+            P2PResetPendingState(&UartNfc);
+            Pn53xWakeUp();
+            recoveryStatus = SAMConfig(&UartNfc, SAM_NORMAL_MODE);
+            if (recoveryStatus != NFC_SUCCESS) {
+                SEGGER_RTT_printf(0, "[P2P]:activation recovery error=%d, pn532=0x%02x, mode=%s\n",
+                                  recoveryStatus, UartNfc.last_error,
+                                  activeMode == P2P_ACTIVE_MODE ? "active" : "passive");
+            }
+        } else {
+            P2PResetPendingState(&UartNfc);
+        }
+        activationWaitCount = 0;
+        SEGGER_RTT_printf(0, "[P2P]:initiator init error=%d, pn532=0x%02x, mode=%s\n",
+                          status, UartNfc.last_error,
+                          activeMode == P2P_ACTIVE_MODE ? "active" : "passive");
+        failureCount++;
+        if (activeMode == P2P_PASSIVE_MODE && failureCount >= 2) {
+            activeMode   = P2P_ACTIVE_MODE;
+            failureCount = 0;
+        } else if (activeMode == P2P_ACTIVE_MODE) {
+            activeMode   = P2P_PASSIVE_MODE;
+            failureCount = 0;
         }
         break;
     case TRANS:
@@ -154,25 +187,44 @@ void P2pInitiatorFsm(void)
             }
             State = RELEASE;
         } else if (status != NFC_WAIT) {
-            SEGGER_RTT_printf(0, "[P2P]:initiator exchange error=%d, pn532=0x%02x\n",
-                              status, UartNfc.last_error);
-            activeMode = P2P_PASSIVE_MODE;
-            failureCount = 0;
-            State = WAIT_TARGET;
+            SEGGER_RTT_printf(0, "[P2P]:initiator exchange error=%d, pn532=0x%02x, mode=%s\n",
+                              status, UartNfc.last_error,
+                              activeMode == P2P_ACTIVE_MODE ? "active" : "passive");
+            exchangeError = status;
+            State         = RECOVER;
         }
         break;
     case RELEASE:
         status = P2PInitiatorRelease(&UartNfc);
-        if (status == NFC_WAIT) {
-            break;
-        }
         if (status != NFC_SUCCESS) {
-            SEGGER_RTT_printf(0, "[P2P]:release error=%d, pn532=0x%02x\n",
-                              status, UartNfc.last_error);
+            SEGGER_RTT_printf(0, "[P2P]:release error=%d, pn532=0x%02x, mode=%s\n",
+                              status, UartNfc.last_error,
+                              activeMode == P2P_ACTIVE_MODE ? "active" : "passive");
         }
-        activeMode = P2P_PASSIVE_MODE;
-        failureCount = 0;
-        State = WAIT_TARGET;
+        P2PResetPendingState(&UartNfc);
+        activeMode          = P2P_PASSIVE_MODE;
+        failureCount        = 0;
+        activationWaitCount = 0;
+        State               = WAIT_TARGET;
+        break;
+    case RECOVER:
+        status = P2PInitiatorRelease(&UartNfc);
+        if (status != NFC_SUCCESS) {
+            SEGGER_RTT_printf(0, "[P2P]:recover release error=%d, pn532=0x%02x, mode=%s\n",
+                              status, UartNfc.last_error,
+                              activeMode == P2P_ACTIVE_MODE ? "active" : "passive");
+        }
+        P2PResetPendingState(&UartNfc);
+        if (activeMode == P2P_PASSIVE_MODE &&
+            (exchangeError == NFC_ETIMEOUT || exchangeError == NFC_ERFTRANS ||
+             exchangeError == NFC_EPROTOCOL)) {
+            activeMode = P2P_ACTIVE_MODE;
+        } else {
+            activeMode = P2P_PASSIVE_MODE;
+        }
+        failureCount        = 0;
+        activationWaitCount = 0;
+        State               = WAIT_TARGET;
         break;
     }
 }

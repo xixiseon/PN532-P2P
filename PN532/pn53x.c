@@ -80,12 +80,18 @@ uint64_t mirror64(uint64_t ui64Bits)
 
 void nfc_ctor(nfc *const me, PN53x_Interface *interface)
 {
-    me->_interface             = interface;
-    me->bPar                   = true;
-    me->last_error             = 0;
-    me->activated_mode         = 0;
-    me->initiator_init_pending = false;
-    me->target_init_pending    = false;
+    me->_interface = interface;
+    me->bPar       = true;
+    me->last_error = 0;
+    P2PResetPendingState(me);
+}
+
+void P2PResetPendingState(nfc *const me)
+{
+    me->initiator_init_pending  = false;
+    me->target_init_pending     = false;
+    me->target_get_data_pending = false;
+    me->activated_mode          = 0;
 }
 
 bool data_packing(uint8_t *pHeader, uint32_t wLen, uint8_t *pBody)
@@ -116,9 +122,7 @@ bool data_packing(uint8_t *pHeader, uint32_t wLen, uint8_t *pBody)
 
 void WakeUp(nfc *const me)
 {
-    me->activated_mode         = 0;
-    me->initiator_init_pending = false;
-    me->target_init_pending    = false;
+    P2PResetPendingState(me);
     PN53x_wakeup_vcall(me->_interface);
     Delay(15);
 }
@@ -1517,41 +1521,8 @@ static int Pn53xDecodeStatus(nfc *const me, uint8_t status)
     }
 }
 
-int InJumpForDEP(nfc *const me)
-{
-    uint8_t *pframe = pn532_bodybuf;
-    int16_t  status;
-
-    if (me == NULL) {
-        return NFC_EINVARG;
-    }
-
-    me->last_error = 0;
-    pframe[0] = PN532_COMMAND_INJUMPFORDEP;
-    pframe[1] = P2P_PASSIVE_MODE;
-    pframe[2] = P2P_BAUD_106;
-    pframe[3] = 0x00; // No optional parameters follow.
-    if (!data_packing(pn532_packetbuf, 5, pframe)) {
-        return NFC_ESOFT;
-    }
-    status = PN53x_write_command_vcall(me->_interface, pn532_packetbuf, 12);
-    if (status < 0) {
-        return status;
-    }
-    status = PN53x_read_response_vcall(me->_interface, PN532_COMMAND_INJUMPFORDEP,
-                                       pn532_recvbuf,
-                                       sizeof(pn532_recvbuf), PN532_FRAME_DEFAULT_WAIT_TIME);
-    if (status < 0) {
-        return status;
-    }
-    if (status < 1) {
-        return NFC_EINVRESPOND;
-    }
-    return Pn53xDecodeStatus(me, pn532_recvbuf[0]);
-}
-
 int P2PInitiatorTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
-                      uint8_t *rx, uint32_t rxCapacity, uint8_t *rxLen)
+                     uint8_t *rx, uint32_t rxCapacity, uint8_t *rxLen)
 {
     uint8_t *pframe = pn532_bodybuf;
     int16_t  status;
@@ -1569,8 +1540,8 @@ int P2PInitiatorTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
     }
 
     me->last_error = 0;
-    pframe[0] = PN532_COMMAND_INDATAEXCHANGE;
-    pframe[1] = 0x01; // Logical target number.
+    pframe[0]      = PN532_COMMAND_INDATAEXCHANGE;
+    pframe[1]      = 0x01; // Logical target number.
     if (txLen > 0) {
         memcpy(pframe + 2, tx, txLen);
     }
@@ -1611,7 +1582,7 @@ int P2PInitiatorTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
 }
 
 int P2PTargetTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
-                   uint8_t *rx, uint32_t rxCapacity, uint8_t *rxLen)
+                  uint8_t *rx, uint32_t rxCapacity, uint8_t *rxLen)
 {
     int length;
 
@@ -1651,10 +1622,10 @@ int P2PInitiatorInit(nfc *const me, uint8_t activeMode, uint8_t baudRate)
     }
     if (!me->initiator_init_pending) {
         me->last_error = 0;
-        status = PN53x_write_command_vcall(me->_interface,
-                                           pn532_packetbuf, 12);
+        status         = PN53x_write_command_vcall(me->_interface,
+                                                   pn532_packetbuf, 12);
         if (status < 0) {
-            me->target_init_pending = false;
+            me->initiator_init_pending = false;
             return status;
         }
         me->initiator_init_pending = true;
@@ -1670,7 +1641,6 @@ int P2PInitiatorInit(nfc *const me, uint8_t activeMode, uint8_t baudRate)
     }
     if (status < 0) {
         me->initiator_init_pending = false;
-        me->target_init_pending    = false;
         return status;
     }
     me->initiator_init_pending = false;
@@ -1690,7 +1660,7 @@ int P2PTargetInit(nfc *const me)
     }
 
     pframe[0] = PN532_COMMAND_TGINITASTARGET;
-    /* DEP only; accept passive and active activation. */
+    /* DEP only; allows Passive and Active activation. */
     pframe[1] = 0x02;
 
     /** SENS_RES */
@@ -1703,7 +1673,7 @@ int P2PTargetInit(nfc *const me)
     pframe[6] = 0x56;
 
     /** SEL_RES */
-    pframe[7] = 0x40; // DEP only mode
+    pframe[7] = 0x40; // SEL_RES advertises NFC-DEP capability.
 
     /**Parameters to build POL_RES (18 bytes including system code) */
     pframe[8]  = 0x01;
@@ -1747,10 +1717,10 @@ int P2PTargetInit(nfc *const me)
     if (!me->target_init_pending) {
         me->last_error     = 0;
         me->activated_mode = 0;
-        status = PN53x_write_command_vcall(me->_interface,
-                                           pn532_packetbuf, 46);
+        status             = PN53x_write_command_vcall(me->_interface,
+                                                       pn532_packetbuf, 46);
         if (status < 0) {
-            me->initiator_init_pending = false;
+            me->target_init_pending = false;
             return status;
         }
         me->target_init_pending = true;
@@ -1766,9 +1736,8 @@ int P2PTargetInit(nfc *const me)
     }
 
     if (status < 0) {
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
-        me->activated_mode         = 0;
+        me->target_init_pending = false;
+        me->activated_mode      = 0;
         return status;
     }
     me->target_init_pending = false;
@@ -1777,6 +1746,7 @@ int P2PTargetInit(nfc *const me)
     }
     me->activated_mode = pn532_recvbuf[0];
     if ((me->activated_mode & PN532_ACTIVATED_MODE_DEP) == 0) {
+        me->activated_mode = 0;
         return NFC_EPROTOCOL;
     }
     return NFC_SUCCESS;
@@ -1800,7 +1770,7 @@ int tgSetData(nfc *const me, uint8_t *pData, uint32_t wLen)
     }
 
     me->last_error = 0;
-    pframe[0] = PN532_COMMAND_TGSETDATA;
+    pframe[0]      = PN532_COMMAND_TGSETDATA;
     memcpy(&pframe[1], pData, wLen);
     if (!data_packing(pn532_packetbuf, wLen + 2, pframe)) {
         return NFC_ESOFT;
@@ -1808,32 +1778,24 @@ int tgSetData(nfc *const me, uint8_t *pData, uint32_t wLen)
     status = PN53x_write_command_vcall(me->_interface, pn532_packetbuf,
                                        wLen + 9);
     if (status < 0) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
+        P2PResetPendingState(me);
         return status;
     }
     status = PN53x_read_response_vcall(me->_interface, PN532_COMMAND_TGSETDATA,
                                        pn532_recvbuf,
                                        sizeof(pn532_recvbuf), PN532_FRAME_DEFAULT_WAIT_TIME);
     if (status < 0) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
+        P2PResetPendingState(me);
         return status;
     }
     if (status < 1) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
+        P2PResetPendingState(me);
         return NFC_EINVRESPOND;
     }
 
     result = Pn53xDecodeStatus(me, pn532_recvbuf[0]);
     if (result < 0) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
+        P2PResetPendingState(me);
     }
     return result;
 }
@@ -1849,51 +1811,53 @@ int tgGetData(nfc *const me, uint8_t *pBuf, uint32_t capacity)
         return NFC_EINVARG;
     }
     if ((me->activated_mode & PN532_ACTIVATED_MODE_DEP) == 0) {
+        me->target_get_data_pending = false;
         return NFC_EPROTOCOL;
     }
 
-    me->last_error = 0;
-    pframe[0]       = PN532_COMMAND_TGGETDATA;
-    if (!data_packing(pn532_packetbuf, 2, pframe)) {
-        return NFC_ESOFT;
+    if (!me->target_get_data_pending) {
+        me->last_error = 0;
+        pframe[0]      = PN532_COMMAND_TGGETDATA;
+        if (!data_packing(pn532_packetbuf, 2, pframe)) {
+            return NFC_ESOFT;
+        }
+        status = PN53x_write_command_vcall(me->_interface,
+                                           pn532_packetbuf, 9);
+        if (status < 0) {
+            me->target_get_data_pending = false;
+            me->activated_mode          = 0;
+            return status;
+        }
+        me->target_get_data_pending = true;
     }
-    status = PN53x_write_command_vcall(me->_interface, pn532_packetbuf, 9);
-    if (status < 0) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
-        return status;
-    }
+
     status = PN53x_read_response_vcall(me->_interface,
                                        PN532_COMMAND_TGGETDATA,
                                        pn532_recvbuf, sizeof(pn532_recvbuf),
                                        PN532_FRAME_DEFAULT_WAIT_TIME);
+    if (status == NFC_ETIMEOUT) {
+        return NFC_WAIT;
+    }
     if (status < 0) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
+        me->target_get_data_pending = false;
+        me->activated_mode          = 0;
         return status;
     }
+    me->target_get_data_pending = false;
     if (status < 1) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
+        me->activated_mode = 0;
         return NFC_EINVRESPOND;
     }
 
     result = Pn53xDecodeStatus(me, pn532_recvbuf[0]);
     if (result < 0) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
+        me->activated_mode = 0;
         return result;
     }
 
     length = status - 1;
     if (length > capacity) {
-        me->activated_mode         = 0;
-        me->initiator_init_pending = false;
-        me->target_init_pending    = false;
+        me->activated_mode = 0;
         return NFC_EOVFLOW;
     }
     if (length > 0) {
@@ -1912,8 +1876,8 @@ int P2PInitiatorRelease(nfc *const me)
     }
 
     me->last_error = 0;
-    pframe[0] = PN532_COMMAND_INRELEASE;
-    pframe[1] = 0x01; // Release logical target 1.
+    pframe[0]      = PN532_COMMAND_INRELEASE;
+    pframe[1]      = 0x01; // Release logical target 1.
     if (!data_packing(pn532_packetbuf, 3, pframe)) {
         return NFC_ESOFT;
     }
