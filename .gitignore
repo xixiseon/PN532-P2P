@@ -1,0 +1,12 @@
+# Keil build output
+/OBJ/
+/USER/*.map
+/USER/*.lst
+/USER/JLinkSettings.ini
+/USER/JLinkLog.txt
+/USER/*.uvguix.*
+.vscode/
+.agents/
+/USER/*.uvoptx
+/USER/EventRecorderStub.scvd
+/USER/DebugConfig/

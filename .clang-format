@@ -1,0 +1,31 @@
+BasedOnStyle: LLVM
+AccessModifierOffset:	-4
+Language: Cpp
+# 开括号(开圆括号、开尖括号、开方括号)后的对齐: Align, DontAlign, AlwaysBreak(总是在开括号后换行)
+AlignAfterOpenBracket:	Align
+PointerAlignment: Right
+# 连续赋值时，对齐所有等号
+AlignConsecutiveAssignments:	true
+# 连续声明时，对齐所有声明的变量名
+AlignConsecutiveDeclarations:	true
+# 左对齐逃脱换行(使用反斜杠换行)的反斜杠
+# AlignEscapedNewlinesLeft:	true
+AlignConsecutiveMacros: true
+# 左对齐换行(使用反斜杠换行)的反斜杠
+AlignEscapedNewlines: DontAlign
+# # 左对齐换行(使用反斜杠换行)的反斜杠
+# AlignEscapedNewlinesLeft: true
+AccessModifierOffset: -4
+IndentWidth: 4
+ContinuationIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AllowShortIfStatementsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+ColumnLimit:     0
+AllowShortFunctionsOnASingleLine: Empty
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterEnum: false
+SortIncludes: false
