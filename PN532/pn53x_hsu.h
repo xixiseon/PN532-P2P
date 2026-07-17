@@ -27,6 +27,7 @@ int16_t HsuReadResponse(uint8_t command, uint8_t *pbuf, uint32_t wlen,
 void    PN53xUartSetBaudrate(uint32_t baudrate);
 bool    HsuWakeUp(void);
 void    Pn53xUartInit(void);
+void    Pn53xHsuClearReceive(void);
 void    Pn53xTask(void);
 void    Pn53xUartSend(uint8_t *send_data, uint16_t len);
 

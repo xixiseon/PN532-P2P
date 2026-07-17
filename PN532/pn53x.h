@@ -331,6 +331,7 @@ typedef enum {
 
 #define PN532_FRAME_DEFAULT_WAIT_TIME  5000 // default is 60ms
 #define PN532_FRAME_SAMCFG_WAIT_TIME   1500
+#define PN532_P2P_ACTIVATION_POLL_WAIT_TIME 250
 #define PN532_FRAME_INLIST_TARGET_TIME 150
 
 typedef struct {
@@ -420,7 +421,8 @@ int  P2PTargetTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
 int  P2PInitiatorTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
                       uint8_t *rx, uint32_t rxCapacity, uint8_t *rxLen);
 int  P2PInitiatorRelease(nfc *const me);
-void P2PResetPendingState(nfc *const me);
+void P2PClearLocalState(nfc *const me);
+void P2PAbortCurrentCommand(nfc *const me);
 int  tgSetData(nfc *const me, uint8_t *pData, uint32_t wLen);
 int  tgGetData(nfc *const me, uint8_t *pBuf, uint32_t capacity);
 #endif

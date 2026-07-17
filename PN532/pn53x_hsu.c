@@ -41,7 +41,7 @@ static bool HsuWaitForData(uint32_t count, uint32_t *timeout,
     return true;
 }
 
-static void HsuClearReceive(void)
+void Pn53xHsuClearReceive(void)
 {
     uint32_t primask = __get_PRIMASK();
 
@@ -205,7 +205,7 @@ static int HsuReadAckFrame(void)
 
     while (matched < sizeof(ack)) {
         if (!HsuWaitForData(1, &timeout, 10)) {
-            HsuClearReceive();
+            Pn53xHsuClearReceive();
             return NFC_ETIMEOUT;
         }
         value = RingBufferDequeue(&Pn532RingBufHnd);
@@ -237,7 +237,7 @@ int16_t HsuReadResponse(uint8_t command, uint8_t *pbuf, uint32_t wlen,
 
     while (headIndex < sizeof(frameHead)) {
         if (!HsuWaitForData(1, &timeout, 40)) {
-            HsuClearReceive();
+            Pn53xHsuClearReceive();
             return NFC_ETIMEOUT;
         }
         value = RingBufferDequeue(&Pn532RingBufHnd);
@@ -251,18 +251,18 @@ int16_t HsuReadResponse(uint8_t command, uint8_t *pbuf, uint32_t wlen,
     }
 
     if (!HsuWaitForData(2, &timeout, 40)) {
-        HsuClearReceive();
+        Pn53xHsuClearReceive();
         return NFC_ETIMEOUT;
     }
     length = RingBufferDequeue(&Pn532RingBufHnd);
     lcs    = RingBufferDequeue(&Pn532RingBufHnd);
     if (length < 2 || (uint8_t)(length + lcs) != 0) {
-        HsuClearReceive();
+        Pn53xHsuClearReceive();
         return NFC_EINVRESPOND;
     }
 
     if (!HsuWaitForData((uint32_t)length + 2, &timeout, 40)) {
-        HsuClearReceive();
+        Pn53xHsuClearReceive();
         return NFC_ETIMEOUT;
     }
 

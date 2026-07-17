@@ -83,15 +83,32 @@ void nfc_ctor(nfc *const me, PN53x_Interface *interface)
     me->_interface = interface;
     me->bPar       = true;
     me->last_error = 0;
-    P2PResetPendingState(me);
+    P2PClearLocalState(me);
 }
 
-void P2PResetPendingState(nfc *const me)
+/* Clears MCU-side P2P tracking only. It does not abort a PN532 command. */
+void P2PClearLocalState(nfc *const me)
 {
+    if (me == NULL) {
+        return;
+    }
+
     me->initiator_init_pending  = false;
     me->target_init_pending     = false;
     me->target_get_data_pending = false;
     me->activated_mode          = 0;
+}
+
+void P2PAbortCurrentCommand(nfc *const me)
+{
+    if (me == NULL || me->_interface == NULL) {
+        return;
+    }
+
+    PN53x_SendAck_vcall(me->_interface);
+    Delay(1);
+    Pn53xHsuClearReceive();
+    P2PClearLocalState(me);
 }
 
 bool data_packing(uint8_t *pHeader, uint32_t wLen, uint8_t *pBody)
@@ -122,7 +139,7 @@ bool data_packing(uint8_t *pHeader, uint32_t wLen, uint8_t *pBody)
 
 void WakeUp(nfc *const me)
 {
-    P2PResetPendingState(me);
+    P2PClearLocalState(me);
     PN53x_wakeup_vcall(me->_interface);
     Delay(15);
 }
@@ -1510,6 +1527,7 @@ static int Pn53xDecodeStatus(nfc *const me, uint8_t status)
     switch (status & 0x3F) {
     case 0x00:
         return NFC_SUCCESS;
+    case ETIMEOUT:
     case ERFTIMEOUT:
         return NFC_ETIMEOUT;
     case EDEPINVSTATE:
@@ -1634,7 +1652,7 @@ int P2PInitiatorInit(nfc *const me, uint8_t activeMode, uint8_t baudRate)
 
     status = PN53x_read_response_vcall(me->_interface, PN532_COMMAND_INJUMPFORDEP,
                                        pn532_recvbuf,
-                                       sizeof(pn532_recvbuf), PN532_FRAME_DEFAULT_WAIT_TIME);
+                                       sizeof(pn532_recvbuf), PN532_P2P_ACTIVATION_POLL_WAIT_TIME);
 
     if (status == NFC_ETIMEOUT) {
         return NFC_WAIT;
@@ -1778,24 +1796,24 @@ int tgSetData(nfc *const me, uint8_t *pData, uint32_t wLen)
     status = PN53x_write_command_vcall(me->_interface, pn532_packetbuf,
                                        wLen + 9);
     if (status < 0) {
-        P2PResetPendingState(me);
+        P2PClearLocalState(me);
         return status;
     }
     status = PN53x_read_response_vcall(me->_interface, PN532_COMMAND_TGSETDATA,
                                        pn532_recvbuf,
                                        sizeof(pn532_recvbuf), PN532_FRAME_DEFAULT_WAIT_TIME);
     if (status < 0) {
-        P2PResetPendingState(me);
+        P2PClearLocalState(me);
         return status;
     }
     if (status < 1) {
-        P2PResetPendingState(me);
+        P2PClearLocalState(me);
         return NFC_EINVRESPOND;
     }
 
     result = Pn53xDecodeStatus(me, pn532_recvbuf[0]);
     if (result < 0) {
-        P2PResetPendingState(me);
+        P2PClearLocalState(me);
     }
     return result;
 }
