@@ -5,10 +5,10 @@
 #include <stdbool.h>
 typedef struct {
     uint8_t *pBuf;
-    uint32_t WritePos;
-    uint32_t ReadPos;
+    volatile uint32_t WritePos;
+    volatile uint32_t ReadPos;
     uint32_t size;
-    uint32_t cnt;
+    volatile uint32_t cnt;
 } RingBuf_t;
 
 typedef RingBuf_t RingBufHnd_t;

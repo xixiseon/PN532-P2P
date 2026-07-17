@@ -26,7 +26,30 @@
 
 static RingBufHnd_t Pn532RingBufHnd;
 uint8_t             usart_rx_buffer[PN53X_BUFF_SIZE];
-static bool         FrameReceiveDone = false;
+static volatile bool FrameReceiveDone = false;
+
+static bool HsuWaitForData(uint32_t count, uint32_t *timeout,
+                           uint32_t delayUs)
+{
+    while (RingBufGetDataCount(&Pn532RingBufHnd) < count) {
+        if (*timeout == 0) {
+            return false;
+        }
+        (*timeout)--;
+        SysTickDelayUs(delayUs);
+    }
+    return true;
+}
+
+static void HsuClearReceive(void)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    RingbufClear(&Pn532RingBufHnd);
+    FrameReceiveDone = false;
+    __set_PRIMASK(primask);
+}
 
 void Hsu_Interface_ctor(Hsu_Interface *const me, uint32_t cnt, uint32_t bps)
 {
@@ -104,9 +127,9 @@ void Pn53xUartInit(void)
 {
     /* enable the usart2 and gpio clock */
     Pn53xUartConfig();
+    RingbufInit(&Pn532RingBufHnd, usart_rx_buffer, PN53X_BUFF_SIZE);
     USART_ITConfig(PN53X_UART, USART_IT_RXNE, ENABLE);
     USART_ITConfig(PN53X_UART, USART_IT_IDLE, ENABLE);
-    RingbufInit(&Pn532RingBufHnd, usart_rx_buffer, PN53X_BUFF_SIZE);
 }
 
 void Pn53xUartSend(uint8_t *send_data, uint16_t len)
@@ -137,48 +160,6 @@ void PN53X_USART_IRQHandler(void)
         USART_ReceiveData(PN53X_UART);
         FrameReceiveDone = true;
     }
-}
-
-/**
- * @brief
- *
- * @param recvBuf  pointer to recv buf.
- * @param len data len want to recv.
- * @param timeout wait time.
- */
-int Pn53xUartReceive(uint8_t *recvBuf, uint16_t len, uint32_t timeout)
-{
-    /* wait receive finish*/
-    uint32_t volatile tick = timeout;
-    uint32_t totalRcvLen   = 0x00;
-    while (1) {
-        totalRcvLen = RingBufGetDataCount(&Pn532RingBufHnd);
-        if (totalRcvLen >= len && FrameReceiveDone) {
-            FrameReceiveDone = false;
-            break;
-        }
-        tick--;
-        if (tick <= 0) {
-            /*Timeout.maybe some useless data in the ringbuf, clear it*/
-            if (totalRcvLen > 0) {
-                RingbufClear(&Pn532RingBufHnd);
-            }
-            return NFC_ETIMEOUT;
-        }
-        SysTickDelayUs(10);
-    }
-
-    /*we must check and get the newest len data.*/
-    if (totalRcvLen > len) {
-        /*flush out the old data.*/
-        for (uint32_t i = 0; i < (totalRcvLen - len); i++) {
-            RingBufferDequeue(&Pn532RingBufHnd);
-        }
-    }
-    for (uint32_t i = 0; i < len; i++) {
-        *recvBuf++ = RingBufferDequeue(&Pn532RingBufHnd);
-    }
-    return NFC_SUCCESS;
 }
 
 bool HsuWakeUp(void)
@@ -214,105 +195,105 @@ bool HsuWakeUp(void)
     return true;
 }
 
-static int HsuReadAckFrame()
+static int HsuReadAckFrame(void)
 {
-    uint8_t PN532_ACK[]        = {0, 0, 0xFF, 0, 0xFF, 0};
-    uint8_t ackBuf[6]          = {0x00};
-    uint32_t volatile TimeTick = PN532_ACK_WAIT_TIME;
-    int ret                    = 0x00;
+    static const uint8_t ack[] = {0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00};
+    static const uint8_t prefix[] = {0, 1, 0, 1, 0, 1};
+    uint32_t timeout = PN532_ACK_WAIT_TIME;
+    uint8_t  matched = 0;
+    uint8_t  value;
 
-    if ((ret = Pn53xUartReceive(ackBuf, 6, PN532_ACK_WAIT_TIME)) < 0) {
-        return ret;
+    while (matched < sizeof(ack)) {
+        if (!HsuWaitForData(1, &timeout, 10)) {
+            HsuClearReceive();
+            return NFC_ETIMEOUT;
+        }
+        value = RingBufferDequeue(&Pn532RingBufHnd);
+        while (matched > 0 && value != ack[matched]) {
+            matched = prefix[matched - 1];
+        }
+        if (value == ack[matched]) {
+            matched++;
+        }
     }
-
-    if (0x00 == memcmp(PN532_ACK, ackBuf, sizeof(PN532_ACK))) {
-        return NFC_SUCCESS;
-    } else {
-        return NFC_EIO;
-    }
+    return NFC_SUCCESS;
 }
 
 int16_t HsuReadResponse(uint8_t command, uint8_t *pbuf, uint32_t wlen,
                         uint32_t timeoutMs)
 {
-    uint32_t volatile Timeout = timeoutMs * 5;
-    uint32_t totalRcvLen      = 0x00;
-    int16_t  result           = NFC_SUCCESS;
-    bool     bFindFrameHead   = false;
-    /* wait  for reveive  finish message.*/
-    while (1) {
-        totalRcvLen = RingBufGetDataCount(&Pn532RingBufHnd);
-        if (totalRcvLen > PN532_MIN_FRAME_SIZE && FrameReceiveDone) {
-            FrameReceiveDone = false;
-            break;
-        }
-        Timeout--;
-        if (Timeout <= 0) {
-            if (totalRcvLen > 0) {
-                RingbufClear(&Pn532RingBufHnd);
-            }
+    static const uint8_t frameHead[] = {0x00, 0x00, 0xFF};
+    uint32_t timeout = timeoutMs * 5;
+    uint32_t dataLength;
+    uint32_t i;
+    uint8_t  headIndex = 0;
+    uint8_t  length;
+    uint8_t  lcs;
+    uint8_t  value;
+    uint8_t  sum = 0;
+    uint8_t  checksum;
+    uint8_t  postamble;
+    int16_t  result = NFC_SUCCESS;
 
+    while (headIndex < sizeof(frameHead)) {
+        if (!HsuWaitForData(1, &timeout, 40)) {
+            HsuClearReceive();
             return NFC_ETIMEOUT;
         }
-        SysTickDelayUs(40);
-    }
-
-    for (uint32_t i = 0x00; i < totalRcvLen; i++) {
-        if (0x00 == RingBufferDequeue(&Pn532RingBufHnd)) {
-            if (0x00 == RingBufferDequeue(&Pn532RingBufHnd)) {
-                if (0xFF == RingBufferDequeue(&Pn532RingBufHnd)) {
-                    bFindFrameHead = true;
-                    break;
-                }
-            }
+        value = RingBufferDequeue(&Pn532RingBufHnd);
+        if (value == frameHead[headIndex]) {
+            headIndex++;
+        } else if (value == 0x00) {
+            headIndex = (headIndex == 2) ? 2 : 1;
+        } else {
+            headIndex = 0;
         }
     }
 
-    if (!bFindFrameHead) {
-        result = NFC_EINVRESPOND;
-        goto end;
+    if (!HsuWaitForData(2, &timeout, 40)) {
+        HsuClearReceive();
+        return NFC_ETIMEOUT;
+    }
+    length = RingBufferDequeue(&Pn532RingBufHnd);
+    lcs    = RingBufferDequeue(&Pn532RingBufHnd);
+    if (length < 2 || (uint8_t)(length + lcs) != 0) {
+        HsuClearReceive();
+        return NFC_EINVRESPOND;
     }
 
-    do {
-        uint8_t lenth = RingBufferDequeue(&Pn532RingBufHnd); // len
-        uint8_t lcs   = RingBufferDequeue(&Pn532RingBufHnd);
-        if (0 != (uint8_t)(lenth + lcs)) {
-            result = NFC_EINVRESPOND; // lcs error
-            goto end;
-        }
-        uint8_t cmd = command + 1;                                      // response command
-        if (PN532_PN532TOHOST != RingBufferDequeue(&Pn532RingBufHnd) || // TFI
-            (cmd) != RingBufferDequeue(&Pn532RingBufHnd)) {             // D0 = CMD
+    if (!HsuWaitForData((uint32_t)length + 2, &timeout, 40)) {
+        HsuClearReceive();
+        return NFC_ETIMEOUT;
+    }
+
+    dataLength = length - 2;
+    if (dataLength > wlen) {
+        result = NFC_EOVFLOW;
+    } else if (dataLength > 0 && pbuf == NULL) {
+        result = NFC_EINVARG;
+    }
+
+    for (i = 0; i < length; i++) {
+        value = RingBufferDequeue(&Pn532RingBufHnd);
+        sum += value;
+        if (i == 0 && value != PN532_PN532TOHOST) {
             result = NFC_EINVRESPOND;
-            goto end;
+        } else if (i == 1 && value != (uint8_t)(command + 1)) {
+            result = NFC_EINVRESPOND;
+        } else if (i >= 2 && dataLength <= wlen && pbuf != NULL) {
+            pbuf[i - 2] = value;
         }
-        lenth = lenth - 2;
+    }
 
-        uint8_t Remain = RingBufGetDataCount(&Pn532RingBufHnd);
-        /* Ringbuf Data length check*/
-        if ((lenth > wlen) || ((2 + lenth) != Remain)) {
-            result = NFC_EINVRESPOND; // no space for data
-
-            goto end;
-        }
-        uint8_t sum = PN532_PN532TOHOST + cmd;
-
-        for (uint8_t i = 0; i < lenth; i++) {
-            pbuf[i] = RingBufferDequeue(&Pn532RingBufHnd);
-            sum += pbuf[i];
-        }
-        uint8_t checksum = RingBufferDequeue(&Pn532RingBufHnd);
-        if (0 != (uint8_t)(sum + checksum)) {
-            result = NFC_EINVRESPOND; // data checksum error
-
-            goto end;
-        }
-        uint8_t dmuuy = RingBufferDequeue(&Pn532RingBufHnd); // POSTAMBLE
-        result        = lenth;
-    } while (0);
-
-end:
-    return result;
+    checksum = RingBufferDequeue(&Pn532RingBufHnd);
+    postamble = RingBufferDequeue(&Pn532RingBufHnd);
+    if ((uint8_t)(sum + checksum) != 0 || postamble != PN532_POSTAMBLE) {
+        return NFC_EINVRESPOND;
+    }
+    if (result < 0) {
+        return result;
+    }
+    return dataLength;
 }
 
 int HsuWriteCommand(uint8_t *pBuf, uint32_t wLen)

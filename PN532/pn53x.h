@@ -38,6 +38,9 @@ typedef struct {
     uint8_t btSupportByte;
     /** Last reported error */
     int              last_error;
+    uint8_t          activated_mode;
+    bool             initiator_init_pending;
+    bool             target_init_pending;
     uint8_t          ui8Parameters;
     pn532_sam_mode   sammode;
     PN53x_Interface *_interface;
@@ -185,6 +188,12 @@ typedef enum {
 #define NFC_WAIT      -88    /*Wait for data frame.*/
 #define NFC_ECHIP     -90    /*Device's internal chip error*/
 #define NFC_EPROTOCOL -100   /*Error protocol.*/
+
+#define P2P_PASSIVE_MODE 0x00
+#define P2P_ACTIVE_MODE  0x01
+#define P2P_BAUD_106     0x00
+#define P2P_BAUD_212     0x01
+#define P2P_BAUD_424     0x02
 
 // Registers and symbols masks used to covers parts within a register
 //   PN53X_REG_CIU_TxMode
@@ -350,9 +359,7 @@ int  mifare_write_block(nfc *const me, uint8_t blocknum, uint8_t *pData);
 int  mifare_read_block(nfc *const me, uint8_t blocknum, uint8_t *pData);
 int  mifare_authenticate_block(nfc *const me, mifare_t *authenticate_t,
                                uint8_t block_num);
-int  inDataExchange(nfc *const me, uint8_t *pBuf, uint32_t wLen);
 int  InJumpForDEP(nfc *const me);
-int  tgInitAsTarget(nfc *const me);
 int  SAMConfig(nfc *const me, uint8_t mode);
 bool I2cSAMConfig(nfc *const me, uint8_t mode);
 int  readRegister(nfc *const me, uint16_t reg, uint8_t *data);
@@ -406,10 +413,13 @@ int  MifareReplaceId(uint8_t *id);
 int  MifareReadBlock(nfc *const me, uint8_t blocknum, uint8_t *pData);
 int  MifareWriteBlockEx(nfc *const me, uint8_t blocknum, uint8_t *pData);
 bool Pn53xTurnOnTxRxCrc(void);
-int  P2PInitiatorInit(nfc *const me);
+int  P2PInitiatorInit(nfc *const me, uint8_t activeMode, uint8_t baudRate);
 int  P2PTargetInit(nfc *const me);
-int  P2PTargetTxRx(nfc *const me, uint8_t *tx, uint32_t txLen, uint8_t *rx, uint8_t *rxLen);
-int  P2PInitiatorTxRx(nfc *const me, uint8_t *tx, uint32_t txLen, uint8_t *rx, uint8_t *rxLen);
+int  P2PTargetTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
+                   uint8_t *rx, uint32_t rxCapacity, uint8_t *rxLen);
+int  P2PInitiatorTxRx(nfc *const me, uint8_t *tx, uint32_t txLen,
+                      uint8_t *rx, uint32_t rxCapacity, uint8_t *rxLen);
+int  P2PInitiatorRelease(nfc *const me);
 int  tgSetData(nfc *const me, uint8_t *pData, uint32_t wLen);
-int  tgGetData(nfc *const me, uint8_t *pBuf);
+int  tgGetData(nfc *const me, uint8_t *pBuf, uint32_t capacity);
 #endif
